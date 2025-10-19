@@ -11,11 +11,13 @@ import (
 	"gopkg.in/yaml.v2"
 
 	"github.com/photoprism/photoprism/internal/service/cluster"
+	"github.com/photoprism/photoprism/internal/service/cluster/theme"
 	"github.com/photoprism/photoprism/pkg/clean"
 	"github.com/photoprism/photoprism/pkg/fs"
+	"github.com/photoprism/photoprism/pkg/http/dns"
+	"github.com/photoprism/photoprism/pkg/http/header"
 	"github.com/photoprism/photoprism/pkg/list"
 	"github.com/photoprism/photoprism/pkg/rnd"
-	"github.com/photoprism/photoprism/pkg/service/http/header"
 )
 
 // DefaultPortalUrl specifies the default portal URL with variable cluster domain.
@@ -33,7 +35,7 @@ func (c *Config) ClusterDomain() string {
 	}
 
 	// Attempt to derive from system configuration when not explicitly set.
-	if d := deriveSystemDomain(); d != "" {
+	if d := dns.GetSystemDomain(); d != "" {
 		return d
 	}
 
@@ -89,12 +91,12 @@ func (c *Config) Portal() bool {
 	return c.NodeRole() == cluster.RolePortal
 }
 
-// PortalConfigPath returns the path to the default configuration for cluster nodes.
+// PortalConfigPath returns the path to the default configuration for cluster portals.
 func (c *Config) PortalConfigPath() string {
 	return filepath.Join(c.ConfigPath(), fs.PortalDir)
 }
 
-// PortalThemePath returns the path to the theme files for cluster nodes to use.
+// PortalThemePath returns the path to the theme files for cluster portals to use.
 func (c *Config) PortalThemePath() string {
 	themeDir := filepath.Join(c.PortalConfigPath(), fs.ThemeDir)
 
@@ -104,6 +106,25 @@ func (c *Config) PortalThemePath() string {
 
 	// Fallback to the default theme directory in the main config path.
 	return c.ThemePath()
+}
+
+// NodeConfigPath returns the path to the default configuration for cluster nodes.
+func (c *Config) NodeConfigPath() string {
+	return filepath.Join(c.ConfigPath(), fs.NodeDir)
+}
+
+// NodeThemePath returns the path to the theme files for cluster nodes to use.
+func (c *Config) NodeThemePath() string {
+	return filepath.Join(c.NodeConfigPath(), fs.ThemeDir)
+}
+
+// NodeThemeVersion returns the version to the theme files of the cluster node.
+func (c *Config) NodeThemeVersion() string {
+	if version, err := theme.DetectVersion(c.NodeThemePath()); err == nil {
+		return version
+	}
+
+	return ""
 }
 
 // JoinToken returns the token required to use the node register API endpoint.
@@ -160,7 +181,7 @@ func (c *Config) JoinToken() string {
 func (c *Config) deriveNodeNameAndDomainFromHttpHost() (hostName, domainName string, found bool) {
 	if fqdn := c.SiteDomain(); fqdn != "" && !header.IsIP(fqdn) {
 		hostName, domainName, found = strings.Cut(fqdn, ".")
-		if hostName = clean.DNSLabel(hostName); found && isDNSLabel(hostName) && isDNSDomain(domainName) {
+		if hostName = clean.DNSLabel(hostName); found && dns.IsLabel(hostName) && dns.IsDomain(domainName) {
 			c.options.NodeName = hostName
 			if c.options.ClusterDomain == "" {
 				c.options.ClusterDomain = strings.ToLower(domainName)
@@ -188,7 +209,7 @@ func (c *Config) NodeName() string {
 	}
 
 	// Instances/services: derive from hostname via DNSLabel normalization.
-	if hn, _ := getHostname(); hn != "" {
+	if hn, _ := dns.GetHostname(); hn != "" {
 		if cand := clean.DNSLabel(hn); cand != "" {
 			return cand
 		}
@@ -335,7 +356,7 @@ func (c *Config) AdvertiseUrl() string {
 	}
 	// Derive from cluster domain and node name if available; otherwise fall back to SiteUrl().
 	if d := c.ClusterDomain(); d != "" {
-		if n := c.NodeName(); n != "" && isDNSLabel(n) {
+		if n := c.NodeName(); n != "" && dns.IsLabel(n) {
 			return "https://" + n + "." + d + "/"
 		}
 	}
@@ -375,7 +396,7 @@ func (c *Config) SaveClusterUUID(uuid string) error {
 
 	fileName := c.OptionsYaml()
 
-	var m Map
+	var m Values
 
 	if fs.FileExists(fileName) {
 		if b, err := os.ReadFile(fileName); err == nil && len(b) > 0 {
@@ -384,7 +405,7 @@ func (c *Config) SaveClusterUUID(uuid string) error {
 	}
 
 	if m == nil {
-		m = Map{}
+		m = Values{}
 	}
 
 	m["ClusterUUID"] = uuid
@@ -419,14 +440,14 @@ func (c *Config) SaveNodeUUID(uuid string) error {
 
 	fileName := c.OptionsYaml()
 
-	var m Map
+	var m Values
 	if fs.FileExists(fileName) {
 		if b, err := os.ReadFile(fileName); err == nil && len(b) > 0 {
 			_ = yaml.Unmarshal(b, &m)
 		}
 	}
 	if m == nil {
-		m = Map{}
+		m = Values{}
 	}
 	m["NodeUUID"] = uuid
 	if b, err := yaml.Marshal(m); err != nil {

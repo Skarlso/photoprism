@@ -5,12 +5,14 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"gopkg.in/yaml.v2"
 
 	"github.com/photoprism/photoprism/internal/service/cluster"
 	"github.com/photoprism/photoprism/pkg/fs"
+	"github.com/photoprism/photoprism/pkg/http/dns"
 	"github.com/photoprism/photoprism/pkg/list"
 	"github.com/photoprism/photoprism/pkg/rnd"
 )
@@ -248,6 +250,38 @@ func TestConfig_Cluster(t *testing.T) {
 		assert.Equal(t, cluster.ExampleJoinToken, c.JoinToken())
 		assert.Equal(t, "node-secret", c.NodeClientSecret())
 	})
+	t.Run("NodePathsAndVersion", func(t *testing.T) {
+		tempCfg := t.TempDir()
+		ctx := CliTestContext()
+		assert.NoError(t, ctx.Set("config-path", tempCfg))
+		c := NewConfig(ctx)
+
+		expectedNode := filepath.Join(c.ConfigPath(), fs.NodeDir)
+		assert.Equal(t, expectedNode, c.NodeConfigPath())
+
+		expectedTheme := filepath.Join(expectedNode, fs.ThemeDir)
+		assert.Equal(t, expectedTheme, c.NodeThemePath())
+
+		// No files yet → empty version.
+		assert.Equal(t, "", c.NodeThemeVersion())
+
+		assert.NoError(t, os.MkdirAll(expectedTheme, fs.ModeDir))
+
+		// Version file takes precedence and is sanitized.
+		appJsFile := filepath.Join(expectedTheme, fs.AppJsFile)
+		assert.NoError(t, os.WriteFile(appJsFile, []byte(`{foo:"bar"}`), fs.ModeFile))
+		versionFile := filepath.Join(expectedTheme, fs.VersionTxtFile)
+		assert.NoError(t, os.WriteFile(versionFile, []byte(" demo-theme \n"), fs.ModeFile))
+		assert.Equal(t, "demo-theme", c.NodeThemeVersion())
+
+		// Removing version file should fall back to app.js modification time.
+		assert.NoError(t, os.Remove(versionFile))
+		appJS := filepath.Join(expectedTheme, fs.AppJsFile)
+		assert.NoError(t, os.WriteFile(appJS, []byte("console.log('theme');\n"), fs.ModeFile))
+		modTime := time.Date(2025, 10, 18, 12, 0, 0, 0, time.UTC)
+		assert.NoError(t, os.Chtimes(appJS, modTime, modTime))
+		assert.Equal(t, modTime.Format(time.RFC3339), c.NodeThemeVersion())
+	})
 	t.Run("AbsolutePaths", func(t *testing.T) {
 		c := NewConfig(CliTestContext())
 		tempCfg := t.TempDir()
@@ -283,9 +317,9 @@ func TestConfig_Cluster(t *testing.T) {
 		assert.Regexp(t, `^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$`, got)
 	})
 	t.Run("NodeNameNormalization", func(t *testing.T) {
-		orig := getHostname
-		getHostname = func() (string, error) { return "", nil }
-		t.Cleanup(func() { getHostname = orig })
+		orig := dns.GetHostname
+		dns.GetHostname = func() (string, error) { return "", nil }
+		t.Cleanup(func() { dns.GetHostname = orig })
 
 		c := NewConfig(CliTestContext())
 		c.options.NodeName = " My.Host/Name:Prod "
@@ -298,9 +332,9 @@ func TestConfig_Cluster(t *testing.T) {
 		assert.Equal(t, strings.Repeat("a", 32), c.NodeName())
 	})
 	t.Run("NodeNameFromHostname", func(t *testing.T) {
-		orig := getHostname
-		getHostname = func() (string, error) { return "My.Host/Name:Prod", nil }
-		t.Cleanup(func() { getHostname = orig })
+		orig := dns.GetHostname
+		dns.GetHostname = func() (string, error) { return "My.Host/Name:Prod", nil }
+		t.Cleanup(func() { dns.GetHostname = orig })
 
 		c := NewConfig(CliTestContext())
 		c.options.NodeName = ""
