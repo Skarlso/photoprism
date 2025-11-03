@@ -21,6 +21,7 @@ import (
 	"github.com/photoprism/photoprism/internal/mutex"
 	"github.com/photoprism/photoprism/internal/service/cluster"
 	"github.com/photoprism/photoprism/pkg/clean"
+	"github.com/photoprism/photoprism/pkg/dsn"
 	"github.com/photoprism/photoprism/pkg/txt"
 )
 
@@ -28,16 +29,10 @@ import (
 // TODO: PostgreSQL support requires upgrading GORM, so generic column data types can be used.
 const (
 	Auto     = "auto"
-	MySQL    = "mysql"
-	MariaDB  = "mariadb"
-	Postgres = "postgres"
-	SQLite3  = "sqlite3"
-)
-
-// SQLite default DSNs.
-const (
-	SQLiteTestDB    = ".test.db"
-	SQLiteMemoryDSN = ":memory:"
+	MySQL    = dsn.DriverMySQL
+	MariaDB  = dsn.DriverMariaDB
+	Postgres = dsn.DriverPostgres
+	SQLite3  = dsn.DriverSQLite3
 )
 
 // DatabaseDriver returns the database driver name.
@@ -117,9 +112,10 @@ func (c *Config) normalizeDatabaseDSN() {
 
 // DatabaseDSN returns the database data source name (DSN).
 func (c *Config) DatabaseDSN() string {
+	// Generate matching database DSN based on the configured database driver.
 	if c.NoDatabaseDSN() {
 		switch c.DatabaseDriver() {
-		case MySQL, MariaDB:
+		case MySQL:
 			databaseServer := c.DatabaseServer()
 
 			// Connect via Unix Domain Socket?
@@ -131,29 +127,40 @@ func (c *Config) DatabaseDSN() string {
 			}
 
 			return fmt.Sprintf(
-				"%s:%s@%s/%s?charset=utf8mb4,utf8&collation=utf8mb4_unicode_ci&parseTime=true&timeout=%ds",
+				"%s:%s@%s/%s?%s&timeout=%ds",
 				c.DatabaseUser(),
 				c.DatabasePassword(),
 				databaseServer,
 				c.DatabaseName(),
+				dsn.Params[dsn.DriverMySQL],
 				c.DatabaseTimeout(),
 			)
 		case Postgres:
 			return fmt.Sprintf(
-				"user=%s password=%s dbname=%s host=%s port=%d connect_timeout=%d sslmode=disable TimeZone=UTC",
+				"user=%s password=%s dbname=%s host=%s port=%d connect_timeout=%d %s",
 				c.DatabaseUser(),
 				c.DatabasePassword(),
 				c.DatabaseName(),
 				c.DatabaseHost(),
 				c.DatabasePort(),
 				c.DatabaseTimeout(),
+				dsn.Params[dsn.DriverPostgres],
 			)
 		case SQLite3:
-			return filepath.Join(c.StoragePath(), "index.db?_busy_timeout=5000")
+			return filepath.Join(c.StoragePath(), fmt.Sprintf("index.db?%s", dsn.Params[dsn.DriverSQLite3]))
 		default:
 			log.Errorf("config: empty database dsn")
 			return ""
 		}
+	}
+
+	// If missing, add the required parameters to the configured MySQL/MariaDB DSN.
+	if c.DatabaseDriver() == MySQL && !strings.Contains(c.options.DatabaseDSN, "?") {
+		c.options.DatabaseDSN = fmt.Sprintf(
+			"%s?%s&timeout=%ds",
+			c.options.DatabaseDSN,
+			dsn.Params[dsn.DriverMySQL],
+			c.DatabaseTimeout())
 	}
 
 	return c.options.DatabaseDSN
@@ -189,7 +196,7 @@ func (c *Config) ParseDatabaseDSN() {
 		return
 	}
 
-	d := NewDSN(c.options.DatabaseDSN)
+	d := dsn.Parse(c.options.DatabaseDSN)
 
 	c.options.DatabaseName = d.Name
 	c.options.DatabaseServer = d.Server
@@ -218,32 +225,26 @@ func (c *Config) DatabaseServer() string {
 
 // DatabaseHost the database server host.
 func (c *Config) DatabaseHost() string {
+	c.ParseDatabaseDSN()
+
 	if c.DatabaseDriver() == SQLite3 {
 		return ""
 	}
 
-	if s := strings.Split(c.DatabaseServer(), ":"); len(s) > 0 {
-		return s[0]
-	}
-
-	return c.options.DatabaseServer
+	d := dsn.Parse(c.DatabaseDSN())
+	return d.Host()
 }
 
 // DatabasePort the database server port.
 func (c *Config) DatabasePort() int {
-	const defaultPort = 3306
+	c.ParseDatabaseDSN()
 
-	if server := c.DatabaseServer(); server == "" {
+	if c.DatabaseDriver() == SQLite3 {
 		return 0
-	} else if s := strings.Split(server, ":"); len(s) != 2 {
-		return defaultPort
-	} else if port, err := strconv.Atoi(s[1]); err != nil {
-		return defaultPort
-	} else if port < 1 || port > 65535 {
-		return defaultPort
-	} else {
-		return port
 	}
+
+	d := dsn.Parse(c.DatabaseDSN())
+	return d.Port()
 }
 
 // DatabasePortString the database server port as string.
